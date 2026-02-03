@@ -1,0 +1,108 @@
+# ============================================
+# BrokenSite Hunter - Python Dependencies
+# ============================================
+
+# ----------------
+# Web Framework
+# ----------------
+streamlit==1.31.0
+streamlit-extras==0.3.6
+
+# ----------------
+# Web Scraping
+# ----------------
+scrapy==2.11.0
+selenium==4.17.2
+undetected-chromedriver==3.5.5
+beautifulsoup4==4.12.3
+lxml==5.1.0
+html5lib==1.1
+requests==2.31.0
+httpx==0.26.0
+
+# User-Agent rotation
+fake-useragent==1.4.0
+
+# CAPTCHA solving
+2captcha-python==1.2.1
+
+# Proxy support
+requests[socks]==2.31.0
+selenium-wire==5.1.0
+
+# ----------------
+# Google APIs
+# ----------------
+googlemaps==4.10.0
+google-api-python-client==2.116.0
+
+# ----------------
+# Email & Domain Tools
+# ----------------
+python-whois==0.8.0
+dnspython==2.5.0
+validate-email==1.3
+emailvalidation==1.1.0
+
+# Email finding
+# hunter (pip install python-hunter) - if using Hunter.io API
+emails==0.6
+
+# ----------------
+# Database
+# ----------------
+sqlalchemy==2.0.25
+psycopg2-binary==2.9.9  # PostgreSQL adapter
+alembic==1.13.1  # Database migrations
+
+# ----------------
+# Data Processing & Export
+# ----------------
+pandas==2.2.0
+openpyxl==3.1.2  # Excel support
+xlsxwriter==3.1.9
+python-csv==0.0.13
+
+# ----------------
+# Security & SSL
+# ----------------
+pyopenssl==24.0.0
+certifi==2024.2.2
+cryptography==42.0.2
+
+# ----------------
+# Utilities
+# ----------------
+python-dotenv==1.0.1  # Environment variables
+pydantic==2.6.0  # Data validation
+pydantic-settings==2.1.0
+loguru==0.7.2  # Logging
+tqdm==4.66.1  # Progress bars
+click==8.1.7  # CLI tool
+
+# ----------------
+# Testing (optional)
+# ----------------
+pytest==8.0.0
+pytest-asyncio==0.23.4
+pytest-cov==4.1.0
+faker==22.7.0  # Test data generation
+
+# ----------------
+# Code Quality (optional)
+# ----------------
+# black==24.1.1
+# flake8==7.0.0
+# isort==5.13.2
+# mypy==1.8.0
+
+# ----------------
+# Monitoring & Alerts
+# ----------------
+python-telegram-bot==20.8
+
+# ----------------
+# Async Support
+# ----------------
+asyncio==3.4.3
+aiohttp==3.9.3

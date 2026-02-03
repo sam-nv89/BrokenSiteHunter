@@ -1,0 +1,84 @@
+version: '3.8'
+
+services:
+  # PostgreSQL Database
+  db:
+    image: postgres:14-alpine
+    container_name: bsh_postgres
+    environment:
+      POSTGRES_USER: brokensitehunter
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-changeme123}
+      POSTGRES_DB: brokensitehunter
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    restart: unless-stopped
+    networks:
+      - bsh_network
+
+  # Streamlit Web App
+  app:
+    build: .
+    container_name: bsh_app
+    depends_on:
+      - db
+    environment:
+      DATABASE_URL: postgresql://brokensitehunter:${DB_PASSWORD:-changeme123}@db:5432/brokensitehunter
+      GOOGLE_PLACES_API_KEY: ${GOOGLE_PLACES_API_KEY}
+      HUNTER_IO_API_KEY: ${HUNTER_IO_API_KEY}
+      DEBUG_MODE: ${DEBUG_MODE:-false}
+    env_file:
+      - .env
+    volumes:
+      - ./exports:/app/exports
+      - ./logs:/app/logs
+      - ./app:/app/app # Hot reload для разработки
+    ports:
+      - "${STREAMLIT_PORT:-8501}:8501"
+    restart: unless-stopped
+    networks:
+      - bsh_network
+
+  # n8n Workflow Automation (опционально)
+  n8n:
+    image: n8nio/n8n:latest
+    container_name: bsh_n8n
+    environment:
+      - N8N_BASIC_AUTH_ACTIVE=true
+      - N8N_BASIC_AUTH_USER=${N8N_USER:-admin}
+      - N8N_BASIC_AUTH_PASSWORD=${N8N_PASSWORD:-changeme123}
+    volumes:
+      - n8n_data:/home/node/.n8n
+      - ./n8n/workflows:/home/node/.n8n/workflows
+    ports:
+      - "5678:5678"
+    restart: unless-stopped
+    networks:
+      - bsh_network
+
+  # Nginx Reverse Proxy (для production)
+  nginx:
+    image: nginx:alpine
+    container_name: bsh_nginx
+    depends_on:
+      - app
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+    ports:
+      - "80:80"
+      - "443:443"
+    restart: unless-stopped
+    networks:
+      - bsh_network
+    profiles:
+      - production # Запускается только с --profile production
+
+volumes:
+  postgres_data:
+  n8n_data:
+
+
+networks:
+  bsh_network:
+    driver: bridge
