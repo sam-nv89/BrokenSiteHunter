@@ -183,6 +183,7 @@ def check_site_availability(url):
 def check_mobile_friendly(html_content):
     """
     Проверяет наличие viewport meta tag (признак мобильной версии).
+    Улучшенная версия: ищем разные варианты viewport.
     
     Returns:
         dict: {
@@ -195,13 +196,32 @@ def check_mobile_friendly(html_content):
     
     html_lower = html_content.lower()
     
-    # Проверяем viewport meta tag
-    has_viewport = 'viewport' in html_lower and 'width=device-width' in html_lower
+    # Проверяем разные варианты viewport meta tag
+    has_viewport = False
+    
+    # Вариант 1: Стандартный viewport (самый распространенный)
+    if 'name="viewport"' in html_lower or "name='viewport'" in html_lower:
+        has_viewport = True
+    
+    # Вариант 2: Проверяем content="width=device-width"
+    if 'width=device-width' in html_lower:
+        has_viewport = True
+    
+    # Вариант 3: viewport с initial-scale
+    if 'initial-scale' in html_lower and 'viewport' in html_lower:
+        has_viewport = True
+    
+    # Дополнительно: Проверяем наличие media queries (признак адаптивности)
+    has_media_queries = '@media' in html_lower or 'media="screen' in html_lower
+    
+    # Считаем мобильным если есть viewport ИЛИ есть media queries
+    is_mobile_friendly = has_viewport or has_media_queries
     
     return {
-        'is_mobile_friendly': has_viewport,
+        'is_mobile_friendly': is_mobile_friendly,
         'has_viewport': has_viewport
     }
+
 
 
 def check_outdated_design(html_content, url):
@@ -302,6 +322,7 @@ def audit_website(url, api_key=None, index=0, total=0):
         print("  ❌ Invalid URL")
         return {
             'url_normalized': None,
+            'final_url': None,
             'is_https': False,
             'site_available': False,
             'status_code': None,
@@ -311,29 +332,77 @@ def audit_website(url, api_key=None, index=0, total=0):
             'issue_severity': 'UNKNOWN'
         }
     
-    # 1. HTTPS Check
-    is_https = check_https(normalized_url)
+    # =========================================================================
+    # КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: Делаем ОДИН запрос с получением финального URL
+    # =========================================================================
+    
+    html_content = None
+    final_url = normalized_url
+    load_time = None
+    status_code = None
+    site_available = False
+    availability_error = None
+    
+    try:
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        }
+        
+        # Засекаем время начала
+        start_time = time.time()
+        
+        # Делаем запрос с редиректами
+        response = requests.get(
+            normalized_url,
+            headers=headers,
+            timeout=REQUEST_TIMEOUT,
+            allow_redirects=True,  # Следуем редиректам
+            verify=False  # Игнорируем SSL ошибки для этой проверки
+        )
+        
+        # Засекаем время окончания
+        load_time = time.time() - start_time
+        
+        # Сохраняем финальный URL после редиректов
+        final_url = response.url
+        status_code = response.status_code
+        
+        # Считаем сайт доступным если код 2xx (200-299)
+        # Коды 3xx уже обработаны через allow_redirects=True
+        if 200 <= response.status_code < 300:
+            site_available = True
+            html_content = response.text
+        else:
+            # Для кодов вне 2xx - сайт недоступен
+            availability_error = f'HTTP {response.status_code}'
+            
+    except requests.exceptions.Timeout:
+        availability_error = 'Timeout'
+    except requests.exceptions.ConnectionError:
+        availability_error = 'Connection Error'
+    except Exception as e:
+        availability_error = str(e)[:50]
+    
+    # =========================================================================
+    # Теперь все проверки делаем на ФИНАЛЬНОМ URL
+    # =========================================================================
+    
+    # 1. HTTPS Check (проверяем финальный URL!)
+    is_https = check_https(final_url)
     print(f"  🔒 HTTPS: {'✅ Yes' if is_https else '❌ No (HTTP)'}")
     
-    # 2. Site Availability + получение HTML
-    availability = check_site_availability(normalized_url)
-    avail_status = '✅ Yes' if availability['available'] else f"❌ No ({availability['error']})"
+    # 2. Site Availability
+    avail_status = '✅ Yes' if site_available else f"❌ No ({availability_error})"
     print(f"  🌐 Available: {avail_status}")
     
-    # Получаем HTML контент для дополнительных проверок
-    html_content = None
-    if availability['available']:
-        try:
-            response = requests.get(normalized_url, timeout=10, verify=False)
-            if response.status_code == 200:
-                html_content = response.text
-        except:
-            pass
+    # Если был редирект - показываем финальный URL
+    if final_url != normalized_url:
+        print(f"  🔄 Redirected to: {final_url}")
     
-    # 3. SSL Check (только если HTTPS)
+    # 3. SSL Check (только если HTTPS на финальном URL)
     ssl_result = {'valid': False, 'error': 'Not HTTPS'}
     if is_https:
-        ssl_result = check_ssl(normalized_url)
+        ssl_result = check_ssl(final_url)
         ssl_status = '✅ Valid' if ssl_result['valid'] else f"❌ Invalid ({ssl_result['error']})"
         print(f"  🔐 SSL: {ssl_status}")
     
@@ -347,23 +416,23 @@ def audit_website(url, api_key=None, index=0, total=0):
     # 5. Outdated Design Check (только если HTML доступен)
     design_result = {'is_outdated': False, 'reasons': []}
     if html_content:
-        design_result = check_outdated_design(html_content, normalized_url)
+        design_result = check_outdated_design(html_content, final_url)
         if design_result['is_outdated']:
             print(f"  🎨 Design: ⚠️ Outdated ({', '.join(design_result['reasons'][:2])})")
     
     # 6. PageSpeed Check (только если сайт доступен)
     pagespeed_result = {'score': None, 'error': 'Site unavailable'}
-    if availability['available'] and api_key:
+    if site_available and api_key:
         time.sleep(1)  # Задержка перед API запросом
-        pagespeed_result = check_pagespeed(normalized_url, api_key)
+        pagespeed_result = check_pagespeed(final_url, api_key)
         if pagespeed_result['score'] is not None:
             print(f"  ⚡ PageSpeed: {pagespeed_result['score']}/100")
     
-    # Определение серьезности проблемы (теперь с учетом мобильной версии и дизайна)
+    # Определение серьезности проблемы
     severity = determine_severity(
         is_https=is_https,
         ssl_valid=ssl_result['valid'],
-        available=availability['available'],
+        available=site_available,
         pagespeed=pagespeed_result['score'],
         is_mobile_friendly=mobile_result['is_mobile_friendly'],
         is_outdated=design_result['is_outdated']
@@ -371,11 +440,12 @@ def audit_website(url, api_key=None, index=0, total=0):
     
     return {
         'url_normalized': normalized_url,
+        'final_url': final_url,  # Новое поле!
         'is_https': is_https,
-        'site_available': availability['available'],
-        'availability_error': availability['error'],
-        'status_code': availability['status_code'],
-        'load_time': availability.get('load_time'),  # Время загрузки в секундах
+        'site_available': site_available,
+        'availability_error': availability_error,
+        'status_code': status_code,
+        'load_time': load_time,
         'ssl_valid': ssl_result['valid'],
         'ssl_error': ssl_result['error'],
         'is_mobile_friendly': mobile_result['is_mobile_friendly'],
