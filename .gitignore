@@ -86,3 +86,11 @@ temp/
 # OS
 Thumbs.db
 .DS_Store
+
+# Project Logic Logs
+deduplication_log.txt
+
+# Temp / Debug Scripts
+test_fix.py
+scripts/debug_*.py
+scripts/email_scraper.py

@@ -19,6 +19,7 @@ import socket
 import requests
 import pandas as pd
 import time
+import re
 from urllib.parse import urlparse
 from datetime import datetime
 import sys
@@ -26,6 +27,19 @@ import os
 from openpyxl import load_workbook
 from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
+
+# Import helper functions for v2.3
+from audit_websites_helpers import (
+    check_https_multistep,
+    check_mobile_multistep,
+    extract_jquery_version,
+    get_jquery_release_year,
+    check_seo,
+    extract_emails_from_website
+)
+
+# Import deduplication functions for v2.4
+from audit_deduplication import deduplicate_data
 
 # ============================================================================
 # НАСТРОЙКА КОДИРОВКИ ДЛЯ WINDOWS
@@ -53,7 +67,7 @@ PAGESPEED_API_KEY = os.getenv('PAGESPEED_API_KEY', '')  # Опционально
 
 # Rate limiting (чтобы не заблокировали)
 DELAY_BETWEEN_REQUESTS = 2  # секунд между проверками
-REQUEST_TIMEOUT = 10  # секунд на запрос
+REQUEST_TIMEOUT = 15  # секунд на запрос (увеличено для медленных сайтов)
 
 # ============================================================================
 # ФУНКЦИИ ПРОВЕРКИ
@@ -231,42 +245,34 @@ def check_outdated_design(html_content, url):
     Returns:
         dict: {
             'is_outdated': bool,
-            'reasons': list[str]  # Список найденных проблем
+            'issues': list[str]  # Список найденных проблем
         }
     """
     if not html_content:
-        return {'is_outdated': False, 'reasons': []}
+        return {'is_outdated': False, 'issues': []}
     
     html_lower = html_content.lower()
-    reasons = []
+    issues = []
     
     # 1. Использование таблиц для layout (старая практика)
     if '<table' in html_lower and 'cellpadding' in html_lower:
-        reasons.append("Table layout")
+        issues.append("Table layout")
     
     # 2. Flash (устарел полностью)
     if 'flash' in html_lower or '.swf' in html_lower:
-        reasons.append("Flash detected")
+        issues.append("Flash detected")
     
     # 3. Старые jQuery версии (1.x)
     if 'jquery-1.' in html_lower or 'jquery/1.' in html_lower:
-        reasons.append("Old jQuery")
+        issues.append("Old jQuery")
     
-    # 4. Отсутствие viewport (не адаптивный)
-    if 'viewport' not in html_lower:
-        reasons.append("No viewport")
-    
-    # 5. Marquee тег (90-е годы)
-    if '<marquee' in html_lower:
-        reasons.append("Marquee tag")
-    
-    # 6. Frames (устаревшая технология)
-    if '<frameset' in html_lower or '<frame ' in html_lower:
-        reasons.append("Frames")
+    # 4. Фиксированная ширина (не responsive)
+    if 'width:' in html_lower and 'px' in html_lower and '@media' not in html_lower:
+        issues.append("Fixed width")
     
     return {
-        'is_outdated': len(reasons) > 0,
-        'reasons': reasons
+        'is_outdated': len(issues) > 0,
+        'issues': issues
     }
 
 
@@ -307,6 +313,130 @@ def check_pagespeed(url, api_key=None):
         return {'score': None, 'error': str(e)[:50]}
 
 
+def generate_technical_notes(audit_result: dict) -> str:
+    """
+    Generates concise, personalized technical comments (3-5 lines max).
+    Output in English only.
+    
+    Returns:
+        str: Brief technical notes with line breaks (\n) and trailing newline
+    """
+    notes = []
+    
+    # Priority 1: Site Availability Issues
+    if not audit_result.get('site_available', True):
+        error = audit_result.get('availability_error', 'Unknown')
+        status_code = audit_result.get('status_code')
+        
+        if 'Timeout' in error:
+            notes.append(f"⏱️ Site unreachable: Server timeout (>{REQUEST_TIMEOUT}s)")
+            notes.append("Check hosting or server overload")
+            return "\n".join(notes) + "\n"
+        
+        elif status_code == 403 or 'Protected (403)' in error:
+            notes.append("⚠️ HTTP 403: Anti-bot protection active (Cloudflare/WAF)")
+            notes.append("Site works for real users - not critical")
+            return "\n".join(notes) + "\n"
+        
+        elif status_code == 404:
+            notes.append("❌ HTTP 404: Page not found")
+            notes.append("Domain may be deleted or URL changed")
+            return "\n".join(notes) + "\n"
+        
+        elif status_code and status_code >= 500:
+            notes.append(f"🔥 HTTP {status_code}: Server error - site completely down!")
+            notes.append("HOT LEAD - requires immediate attention")
+            return "\n".join(notes) + "\n"
+    
+    # Priority 2: Security Issues (HTTPS/SSL)
+    is_https = audit_result.get('is_https', False)
+    ssl_valid = audit_result.get('ssl_valid', False)
+    ssl_error = audit_result.get('ssl_error', '')
+    
+    if not is_https:
+        notes.append("❌ HTTP only (no encryption)")
+        notes.append("Google marks as 'Not Secure' - critical security issue")
+    elif is_https and not ssl_valid and ssl_error != 'Not HTTPS':
+        if ssl_error and 'expired' in ssl_error.lower():
+            notes.append("⚠️ SSL Certificate Expired (Security Risk)")
+        elif ssl_error and 'self-signed' in ssl_error.lower():
+            notes.append("⚠️ Self-Signed Certificate")
+        else:
+            notes.append(f"❌ SSL Invalid: {ssl_error or 'Unknown Error'}")
+    
+    # Priority 3: Mobile Issues (specific details)
+    is_mobile = audit_result.get('is_mobile_friendly', True)
+    mobile_check = audit_result.get('mobile_check', {})
+    
+    if not is_mobile:
+        reasons = mobile_check.get('reasons', [])
+        
+        # Find specific issue
+        if any('viewport' in r.lower() for r in reasons):
+            notes.append("📱 Missing <meta name='viewport'> tag")
+            notes.append("Site doesn't adapt to phone screens")
+        elif any('media' in r.lower() for r in reasons):
+            notes.append("📱 No responsive CSS (@media queries)")
+            notes.append("60%+ visitors on mobile see broken layout")
+        else:
+            notes.append("📱 Not mobile-optimized")
+            notes.append("Poor UX on phones - users leave quickly")
+    
+    # Priority 4: Design Issues (specific technologies)
+    is_outdated = audit_result.get('is_outdated', False)
+    design_check = audit_result.get('design_check', {})
+    
+    if is_outdated:
+        issues = design_check.get('issues', [])
+        jquery_version = design_check.get('jquery_version')
+        
+        # Prioritize critical issues with specific details
+        if 'Flash detected' in issues:
+            notes.append("🎨 Adobe Flash detected")
+            notes.append("Component broken - Flash died in 2020")
+        elif 'Old jQuery' in issues and jquery_version:
+            year = get_jquery_release_year(jquery_version)
+            notes.append(f"🎨 jQuery {jquery_version} from {year}")
+            notes.append("Security vulnerabilities - needs update")
+        elif 'Table layout' in issues:
+            notes.append("🎨 Table-based layout (1990s tech)")
+            notes.append("Modern sites use CSS Grid/Flexbox")
+        elif 'Fixed width' in issues:
+            notes.append("🎨 Fixed-width design (not responsive)")
+            notes.append("Doesn't resize for different screens")
+
+    # Priority 5: SEO Issues (v2.6)
+    seo_status = audit_result.get('seo_status', '✅ Optimized')
+    seo_details = audit_result.get('seo_details', '')
+    
+    if 'Missing' in seo_status:
+        notes.append("🔍 Critical SEO: Missing tags")
+        notes.append(f"{seo_details}") # e.g. "Missing Title; Missing Desc"
+    elif 'Basic' in seo_status and seo_details != "All Good":
+        # Limit details length
+        details_short = seo_details.split(';')[0]
+        notes.append(f"🔍 SEO Improvement needed")
+        notes.append(f"{details_short}")
+    
+    # Priority 5: Speed Issues (specific metrics)
+    load_time = audit_result.get('load_time')
+    if load_time and load_time > 3.0:
+        if load_time > 5.0:
+            notes.append(f"⚡ Very slow: {load_time:.1f}s load time")
+            notes.append("50% of users abandon after 3s")
+        else:
+            notes.append(f"⚡ Slow: {load_time:.1f}s (should be <3s)")
+            notes.append("Hurts Google rankings & user retention")
+    
+    # Return
+    if not notes:
+        return "✅ All checks passed\n"
+    
+    # Limit to 5 lines max + add trailing newline for visual spacing
+    return "\n".join(notes[:5]) + "\n"
+
+
+
 def audit_website(url, api_key=None, index=0, total=0):
     """
     Полная проверка сайта.
@@ -344,8 +474,14 @@ def audit_website(url, api_key=None, index=0, total=0):
     availability_error = None
     
     try:
+        # Более реалистичный User-Agent для обхода антибот защиты
         headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+            'Accept-Language': 'en-US,en;q=0.5',
+            'DNT': '1',
+            'Connection': 'keep-alive',
+            'Upgrade-Insecure-Requests': '1'
         }
         
         # Засекаем время начала
@@ -367,13 +503,20 @@ def audit_website(url, api_key=None, index=0, total=0):
         final_url = response.url
         status_code = response.status_code
         
-        # Считаем сайт доступным если код 2xx (200-299)
+        # Считаем сайт доступным если:
+        # - 2xx (успех)
+        # - 403 (работает, но блокирует бота - это НЕ критично)
         # Коды 3xx уже обработаны через allow_redirects=True
         if 200 <= response.status_code < 300:
             site_available = True
             html_content = response.text
+        elif response.status_code == 403:
+            # Сайт работает, но блокирует автоматические запросы
+            site_available = True  # Считаем доступным!
+            html_content = response.text if response.text else None
+            availability_error = 'Protected (403)'  # Помечаем как защищенный
         else:
-            # Для кодов вне 2xx - сайт недоступен
+            # Для остальных кодов (404, 500, etc.) - сайт недоступен
             availability_error = f'HTTP {response.status_code}'
             
     except requests.exceptions.Timeout:
@@ -384,12 +527,33 @@ def audit_website(url, api_key=None, index=0, total=0):
         availability_error = str(e)[:50]
     
     # =========================================================================
-    # Теперь все проверки делаем на ФИНАЛЬНОМ URL
+    # V2.3: МНОГОСТУПЕНЧАТАЯ ПРОВЕРКА
     # =========================================================================
     
-    # 1. HTTPS Check (проверяем финальный URL!)
-    is_https = check_https(final_url)
+    # Get response object for headers
+    response_headers = response.headers if 'response' in locals() and response else None
+    
+    # 1. HTTPS + SSL Check (Multi-step с внешними API если нужно)
+    https_check = check_https_multistep(
+        url=final_url,
+        html_content=html_content,
+        response_headers=response_headers,
+        response_obj=response if 'response' in locals() else None
+    )
+    
+    is_https = https_check.get('is_https', False)
+    ssl_valid = https_check.get('ssl_valid', False)
+    ssl_error = https_check.get('ssl_error', 'Not HTTPS')
+    
     print(f"  🔒 HTTPS: {'✅ Yes' if is_https else '❌ No (HTTP)'}")
+    if is_https:
+        ssl_status = '✅ Valid' if ssl_valid else f"❌ Invalid ({ssl_error})"
+        print(f"  🔐 SSL: {ssl_status}")
+        
+        # Показываем методы проверки
+        methods = https_check.get('methods', [])
+        if len(methods) > 1:
+            print(f"     Проверено методами: {', '.join(methods)}")
     
     # 2. Site Availability
     avail_status = '✅ Yes' if site_available else f"❌ No ({availability_error})"
@@ -399,28 +563,57 @@ def audit_website(url, api_key=None, index=0, total=0):
     if final_url != normalized_url:
         print(f"  🔄 Redirected to: {final_url}")
     
-    # 3. SSL Check (только если HTTPS на финальном URL)
-    ssl_result = {'valid': False, 'error': 'Not HTTPS'}
-    if is_https:
-        ssl_result = check_ssl(final_url)
-        ssl_status = '✅ Valid' if ssl_result['valid'] else f"❌ Invalid ({ssl_result['error']})"
-        print(f"  🔐 SSL: {ssl_status}")
-    
-    # 4. Mobile Friendly Check (только если HTML доступен)
-    mobile_result = {'is_mobile_friendly': False, 'has_viewport': False}
+    # 3. Mobile Friendly Check (Multi-step, только если HTML доступен)
+    mobile_check = {'is_mobile_friendly': False, 'reasons': [], 'methods': []}
     if html_content:
-        mobile_result = check_mobile_friendly(html_content)
-        mobile_status = '✅ Yes' if mobile_result['is_mobile_friendly'] else '❌ No'
+        mobile_check = check_mobile_multistep(html_content, final_url)
+        is_mobile_friendly = mobile_check.get('is_mobile_friendly', False)
+        mobile_status = '✅ Yes' if is_mobile_friendly else '❌ No'
         print(f"  📱 Mobile: {mobile_status}")
+        
+        # Показываем методы проверки
+        mobile_methods = mobile_check.get('methods', [])
+        if len(mobile_methods) > 1:
+            print(f"     Проверено методами: {', '.join(mobile_methods[:2])}")
+    else:
+        is_mobile_friendly = False
     
-    # 5. Outdated Design Check (только если HTML доступен)
-    design_result = {'is_outdated': False, 'reasons': []}
+    # 4. Outdated Design Check (с извлечением jQuery версии)
+    design_check = {'is_outdated': False, 'issues': [], 'jquery_version': None}
     if html_content:
-        design_result = check_outdated_design(html_content, final_url)
-        if design_result['is_outdated']:
-            print(f"  🎨 Design: ⚠️ Outdated ({', '.join(design_result['reasons'][:2])})")
+        design_check = check_outdated_design(html_content, final_url)
+        
+        # Извлекаем версию jQuery если найден
+        if 'Old jQuery' in design_check.get('issues', []):
+            jquery_version = extract_jquery_version(html_content)
+            design_check['jquery_version'] = jquery_version
+        
+        if design_check.get('is_outdated'):
+            # Получаем список issues - совместимость со старой версией
+            issues_list = design_check.get('issues', design_check.get('reasons', []))
+            print(f"  🎨 Design: ⚠️ Outdated ({', '.join(issues_list[:2])}")
     
-    # 6. PageSpeed Check (только если сайт доступен)
+    is_outdated = design_check.get('is_outdated', False)
+    
+    # 5. SEO Audit (v2.6)
+    seo_result = {'status': '❌ Missing', 'details': '', 'score': 0}
+    if html_content:
+        seo_result = check_seo(html_content)
+        print(f"  🔍 SEO: {seo_result['status']}")
+        if seo_result.get('details') and seo_result['details'] != "All Good":
+             print(f"     Issues: {seo_result['details']}")
+    
+    # 6. Email Extraction (v2.7)
+    scraped_emails = []
+    if site_available and html_content:
+        print("  📧 Extracting emails...")
+        scraped_emails = extract_emails_from_website(final_url, html_content)
+        if scraped_emails:
+            print(f"  📧 Found: {', '.join(scraped_emails)}")
+        else:
+            print("  📧 No emails found")
+    
+    # 5. PageSpeed Check (только если сайт доступен)
     pagespeed_result = {'score': None, 'error': 'Site unavailable'}
     if site_available and api_key:
         time.sleep(1)  # Задержка перед API запросом
@@ -431,28 +624,52 @@ def audit_website(url, api_key=None, index=0, total=0):
     # Определение серьезности проблемы
     severity = determine_severity(
         is_https=is_https,
-        ssl_valid=ssl_result['valid'],
+        ssl_valid=ssl_valid,
         available=site_available,
         pagespeed=pagespeed_result['score'],
-        is_mobile_friendly=mobile_result['is_mobile_friendly'],
-        is_outdated=design_result['is_outdated']
+        is_mobile_friendly=is_mobile_friendly,
+        is_outdated=is_outdated
     )
+    
+    # Формируем результат аудита для Technical Notes
+    audit_result_for_notes = {
+        'site_available': site_available,
+        'availability_error': availability_error,
+        'status_code': status_code,
+        'is_https': is_https,
+        'ssl_valid': ssl_valid,
+        'ssl_error': ssl_error,
+        'https_check': https_check,
+        'is_mobile_friendly': is_mobile_friendly,
+        'mobile_check': mobile_check,
+        'is_outdated': is_outdated,
+        'design_check': design_check,
+        'seo_status': seo_result['status'],   # Flattened for generate_technical_notes
+        'seo_details': seo_result['details'], # Flattened for generate_technical_notes
+        'load_time': load_time
+    }
+    
+    # Генерируем Technical Notes
+    technical_notes = generate_technical_notes(audit_result_for_notes)
     
     return {
         'url_normalized': normalized_url,
-        'final_url': final_url,  # Новое поле!
+        'final_url': final_url,
         'is_https': is_https,
         'site_available': site_available,
         'availability_error': availability_error,
         'status_code': status_code,
         'load_time': load_time,
-        'ssl_valid': ssl_result['valid'],
-        'ssl_error': ssl_result['error'],
-        'is_mobile_friendly': mobile_result['is_mobile_friendly'],
-        'is_outdated': design_result['is_outdated'],
-        'design_issues': ', '.join(design_result['reasons']) if design_result['reasons'] else None,
+        'ssl_valid': ssl_valid,
+        'ssl_error': ssl_error,
+        'is_mobile_friendly': is_mobile_friendly,
+        'is_outdated': is_outdated,
+        'design_issues': ', '.join(design_check.get('issues', [])) if design_check.get('issues') else None,
+        'seo_status': seo_result['status'],
         'pagespeed_score': pagespeed_result['score'],
-        'issue_severity': severity
+        'issue_severity': severity,
+        'technical_notes': technical_notes,  # НОВОЕ ПОЛЕ v2.3!
+        'scraped_emails': ', '.join(scraped_emails) if scraped_emails else None # v2.7
     }
 
 
@@ -502,9 +719,11 @@ def format_website_status(available, error=None):
     Форматирует статус доступности сайта с эмодзи.
     
     Returns:
-        str: "✅ Online" / "❌ Offline" / "⏱️ Timeout"
+        str: "✅ Online" / "⚠️ Protected" / "❌ Offline" / "⏱️ Timeout"
     """
-    if available:
+    if available and error and 'Protected' in str(error):
+        return "⚠️ Protected"  # Работает, но блокирует ботов
+    elif available:
         return "✅ Online"
     elif error and 'timeout' in str(error).lower():
         return "⏱️ Timeout"
@@ -594,10 +813,14 @@ def format_emails(emails):
         str: Форматированный список email
     """
     if not emails or pd.isna(emails):
-        return ""
+        return "—"
     
     emails_str = str(emails).strip()
     
+    # Filter out placeholders like "### In progress ###"
+    if "progress" in emails_str.lower() or "###" in emails_str:
+        return "—"
+
     # Добавляем пробел после запятой если его нет
     if ',' in emails_str:
         # Разделяем по запятой, убираем пробелы, соединяем с ", "
@@ -656,6 +879,64 @@ def determine_lead_quality(severity, rating):
         return "⚪ SKIP"
 
 
+
+def get_technical_notes_severity(notes: str) -> str:
+    """
+    Анализирует Technical Notes и возвращает severity level.
+    
+    Returns:
+        'CRITICAL' | 'HIGH' | 'MEDIUM' | 'OK'
+    """
+    if not notes or notes.strip() == "—":
+        return 'OK'
+    
+    notes_lower = notes.lower()
+    
+    # CRITICAL markers
+    critical_markers = [
+        '❌ http only',
+        '⏱️ site unreachable',
+        '🔥 http',
+        '🎨 adobe flash'
+    ]
+    
+    # HIGH markers
+    high_markers = [
+        '⚠️ ssl',
+        '📱 missing',
+        '📱 no responsive',
+        '🎨 jquery'
+    ]
+    
+    # MEDIUM markers
+    medium_markers = [
+        '⚡ slow',
+        '⚡ very slow',
+        '🎨 table-based',
+        '🎨 fixed-width',
+        '🎨 outdated',
+        '⚠️ outdated'
+    ]
+    
+    # Check in priority order
+    for marker in critical_markers:
+        if marker in notes_lower:
+            return 'CRITICAL'
+    
+    for marker in high_markers:
+        if marker in notes_lower:
+            return 'HIGH'
+    
+    for marker in medium_markers:
+        if marker in notes_lower:
+            return 'MEDIUM'
+    
+    if '✅' in notes:
+        return 'OK'
+    
+    return 'MEDIUM'  # default
+
+
 def apply_excel_formatting(filepath):
     """
     Применяет визуальное форматирование к Excel файлу.
@@ -683,6 +964,7 @@ def apply_excel_formatting(filepath):
     # Выравнивание
     center_alignment = Alignment(horizontal='center', vertical='center')
     left_alignment = Alignment(horizontal='left', vertical='center')
+    top_left_alignment = Alignment(horizontal='left', vertical='top', wrap_text=True)  # Для Technical Notes
     
     # Границы
     thin_border = Border(
@@ -700,6 +982,9 @@ def apply_excel_formatting(filepath):
         cell.border = thin_border
     
     ws.row_dimensions[1].height = 30
+    
+    # Закрепляем первую строку (заголовок)
+    ws.freeze_panes = 'A2'  # Закрепляет все строки выше A2 (т.е. строку 1)
     
     # 2. Автоматическое растягивание колонок по содержимому
     for col_idx, column in enumerate(ws.columns, 1):
@@ -729,14 +1014,18 @@ def apply_excel_formatting(filepath):
                 pass
         
         # Устанавливаем ширину с учетом типа колонки
-        # Длинные колонки: Category, Name, Address, Website, Email - до 70
+        # Technical Notes: фиксированная ширина 60 символов
+        # Остальные длинные колонки: Category, Name, Address, Website, Email - до 70
         # Остальные - до 50
-        if column_name in ['Category', 'Name', 'Address', 'Website', 'Email']:
+        if column_name == '💬 Technical Notes':
+            adjusted_width = 60  # Фиксированная ширина для Technical Notes
+        elif column_name in ['Category', 'Name', 'Address', 'Website', 'Email']:
             max_width = 70
+            adjusted_width = max(8, min(max_length + 3, max_width))
         else:
             max_width = 50
+            adjusted_width = max(8, min(max_length + 3, max_width))
         
-        adjusted_width = max(8, min(max_length + 3, max_width))
         ws.column_dimensions[col_letter].width = adjusted_width
     
     # 3. Форматирование ячеек данных + цветовое кодирование
@@ -748,6 +1037,27 @@ def apply_excel_formatting(filepath):
             # Получаем название колонки через заголовок
             column_name = ws.cell(1, col_idx).value
             
+            # Technical Notes - специальное форматирование
+            if column_name == '💬 Technical Notes':
+                cell.alignment = top_left_alignment  # Wrap text + top-left
+                # Устанавливаем высоту строки автоматически для переноса текста
+                ws.row_dimensions[row_idx].height = None  # Auto-height
+                
+                # Determine severity and apply color
+                notes_text = str(cell.value) if cell.value else ""
+                severity = get_technical_notes_severity(notes_text)
+                
+                if severity == 'CRITICAL':
+                    cell.fill = red_fill
+                elif severity == 'HIGH':
+                    cell.fill = orange_fill
+                elif severity == 'MEDIUM':
+                    cell.fill = yellow_fill
+                elif severity == 'OK':
+                    cell.fill = green_fill
+                
+                continue  # Skip default formatting logic for this cell
+            
             # Цветовое кодирование по содержимому
             value = str(cell.value) if cell.value else ""
             
@@ -758,6 +1068,8 @@ def apply_excel_formatting(filepath):
             # Website Status - по левому краю с цветом
             if "✅ Online" in value:
                 cell.fill = green_fill
+            elif "⚠️ Protected" in value:
+                cell.fill = orange_fill  # Работает, но блокирует ботов
             elif "❌ Offline" in value or "⏱️ Timeout" in value:
                 cell.fill = red_fill
             
@@ -790,6 +1102,15 @@ def apply_excel_formatting(filepath):
                     cell.fill = green_fill
                 elif "⚠️ Outdated" in value:
                     cell.fill = orange_fill
+            
+            # SEO - по левому краю с цветом
+            elif "🔍 SEO" in column_name:
+                if "✅ Optimized" in value:
+                    cell.fill = green_fill
+                elif "⚠️ Basic" in value:
+                    cell.fill = orange_fill
+                elif "❌ Missing" in value:
+                    cell.fill = red_fill
             
             # Customer Rating - по центру с цветом (зеленый = высокий, красный = низкий)
             elif column_name == '⭐ Customer Rating' and value != "—":
@@ -903,6 +1224,12 @@ def main():
     print(f"✅ Загружено {len(df)} записей")
     print(f"\n📊 Колонки в файле: {', '.join(df.columns.tolist())}")
     
+
+    # ========================================================================
+    # ОПРЕДЕЛЕНИЕ КОЛОНКИ С САЙТОМ (ДО ДЕДУПЛИКАЦИИ)
+    # ========================================================================
+    # Нам нужно знать колонку, чтобы проводить дедупликацию по ней
+    
     # Определение колонки с website
     # Приоритет: точное совпадение, затем вхождение подстроки
     website_column = None
@@ -922,12 +1249,22 @@ def main():
                 website_column = col
                 break
     
+    # Если все еще не нашли - пропускаем дедупликацию или выходим с ошибкой
     if not website_column:
-        print("\n❌ Ошибка: Не найдена колонка с website/URL!")
+        print("\n❌ Ошибка: Не найдена колонка с website/URL для дедупликации!")
         print("Доступные колонки:", ', '.join(df.columns.tolist()))
         sys.exit(1)
-    
+        
     print(f"✅ Найдена колонка с URL: '{website_column}'")
+
+    # ========================================================================
+    # DEDUPLICATION (v2.4)
+    # ========================================================================
+    df, dedup_log = deduplicate_data(df, website_column)
+    
+
+    
+
     
     # Проверка API ключа
     if PAGESPEED_API_KEY:
@@ -938,6 +1275,9 @@ def main():
     
     # Фильтрация: только записи с website
     df_with_websites = df[df[website_column].notna()].copy()
+    
+
+
     
     # Применяем лимит если указан
     if limit:
@@ -1016,10 +1356,32 @@ def main():
         df_final['Phone'] = df_combined['Phone']
     
     # 6. Emails (если есть, форматированные)
-    if 'Email' in df_combined.columns:
-        df_final['Email'] = df_combined['Email'].apply(format_emails)
-    elif 'Emails' in df_combined.columns:
-        df_final['Email'] = df_combined['Emails'].apply(format_emails)
+    # 6. Emails (Smart Merge: Original vs Scraped)
+    def get_best_email(row):
+        original = row.get('Emails', row.get('Email', ''))
+        scraped = row.get('scraped_emails', '')
+        
+        # Check original validity
+        original_str = str(original).strip()
+        is_bad_original = (
+            not original or 
+            pd.isna(original) or 
+            'progress' in original_str.lower() or 
+            '###' in original_str or 
+            original_str.lower() == 'nan'
+        )
+        
+        if not is_bad_original:
+            return format_emails(original)
+            
+        # Fallback to scraped
+        scraped_str = str(scraped).strip()
+        if scraped and scraped_str and scraped_str.lower() != 'none' and scraped_str.lower() != 'nan':
+            return scraped_str
+            
+        return "—"
+
+    df_final['Email'] = df_combined.apply(get_best_email, axis=1)
     
     # 7. ⭐ Customer Rating (форматированный, БЕЗ звезды в значениях)
     if 'Rating' in df_combined.columns:
@@ -1038,9 +1400,9 @@ def main():
         axis=1
     )
     
-    # 9. Security Status (форматированный)
+    # 9. Security Status (Updated logic)
     df_final['🔒 Security'] = df_combined.apply(
-        lambda row: format_security_status(
+        lambda row: '❌ Offline' if not row['site_available'] else format_security_status(
             row['is_https'], 
             row['ssl_valid'],
             row.get('ssl_error', None)
@@ -1048,21 +1410,31 @@ def main():
         axis=1
     )
     
-    # 10. Speed Score (время загрузки)
-    df_final['⚡ Speed'] = df_combined['load_time'].apply(format_speed_score)
-    
-    # 11. Mobile Friendly (новая колонка!)
-    df_final['📱 Mobile'] = df_combined['is_mobile_friendly'].apply(
-        lambda x: '✅ Yes' if x else '❌ No'
-    )
-    
-    # 12. Design Status (новая колонка!)
-    df_final['🎨 Design'] = df_combined.apply(
-        lambda row: f"⚠️ Outdated" if row['is_outdated'] else '✅ Modern',
+    # 10. Speed Score (Updated logic)
+    df_final['⚡ Speed'] = df_combined.apply(
+        lambda row: '❌ Offline' if not row['site_available'] else format_speed_score(row['load_time']),
         axis=1
     )
     
-    # 13. Lead Quality (последняя колонка)
+    # 11. Mobile Friendly (Updated logic)
+    df_final['📱 Mobile'] = df_combined.apply(
+        lambda row: 'N/A' if not row['site_available'] else ('✅ Yes' if row['is_mobile_friendly'] else '❌ No'),
+        axis=1
+    )
+    
+    # 12. Design Status (Updated logic)
+    df_final['🎨 Design'] = df_combined.apply(
+        lambda row: 'N/A' if not row['site_available'] else (f"⚠️ Outdated" if row['is_outdated'] else '✅ Modern'),
+        axis=1
+    )
+
+    # 13. SEO (новая колонка v2.6!)
+    df_final['🔍 SEO'] = df_combined['seo_status']
+    
+    # 13. Technical Notes (v2.3 - НОВАЯ КОЛОНКА!)
+    df_final['💬 Technical Notes'] = df_combined['technical_notes']
+    
+    # 14. Lead Quality (последняя колонка)
     df_final['🎯 Lead Quality'] = df_combined.apply(
         lambda row: determine_lead_quality(
             row['issue_severity'],
