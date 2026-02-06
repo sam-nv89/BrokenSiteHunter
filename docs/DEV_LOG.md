@@ -1,33 +1,27 @@
 # DEV LOG
 
-## 2026-02-06: v2.8 Release - Final Polish & WAF Defense
-- **WAF Bypass & Protection Detection:**
-    - Updated `audit_websites.py` to identify sites returning `403/405` or CAPTCHA challenges as `⚠️ Protected` instead of `❌ Offline`.
-    - Recovered 7 valuable leads that were previously discarded.
-- **Strict Email Filtering:**
-    - Implemented blacklist for placeholder emails (`example@mysite.com`, `@domain.com`).
-    - Added smart fallback to `info@domain.com` only when appropriate.
-- **Report Restoration:**
-    - Created `scripts/apply_styles.py` to re-apply conditional formatting and smart column widths to the final Excel report.
-- **Helper Utilities:**
-    - `scripts/recheck_offline.py`: Tool to deep-scan "offline" sites without re-running the full audit.
+## 2026-02-06: v2.8 Release - Финальная полировка и защита от WAF
+- **Обход WAF и защита:**
+    - Обновлен `audit_websites.py`: теперь сайты с кодами `403/405` или капчей помечаются как `⚠️ Protected` (Защищен), а не `❌ Offline`.
+    - Восстановлено 7 ценных лидов, которые ранее отбрасывались.
+- **Строгая фильтрация Email:**
+    - Внедрен черный список для email-заглушек (`example@mysite.com`, `@domain.com`).
+    - Добавлен умный фоллбэк на `info@domain.com` только в нужных случаях.
+- **Восстановление отчета:**
+    - Создан `scripts/apply_styles.py` для восстановления условного форматирования и ширины колонок в финальном Excel-отчете.
+- **Вспомогательные утилиты:**
+    - `scripts/recheck_offline.py`: Инструмент для глубокой перепроверки "оффлайн" сайтов без полного перезапуска аудита.
 
-## 2026-02-05: v2.7 Release - Strict Email Scraping & Robust HTTPS
-
-### **Features & Improvements**
-1.  **Strict Email Scraping (`audit_websites_helpers.py`):**
-    - **Smart Crawling:** Now parses `contact` and `about` pages using BeautifulSoup.
-    - **Strict Filtering:** Added blacklist (`spam_keywords`) to block fake emails (`user@domain.com`, `example.com`).
-    - **Fallback:** Generates `info@domain.com` if scraping fails completely.
-    - **Result:** ~80% recovery rate on tested "missing email" sites.
-
-2.  **Force HTTPS Check (`audit_websites_helpers.py`):**
-    - **Fix:** Addressed False "HTTP Only" flags for sites blocking HTTP requests (403 Forbidden).
-    - **Logic:** If HTTP fails, script forces a connection to port 443. If successful, site is marked HTTPS.
-    - **Verification:** Validated on `addiegoorthodontics.com`.
-
-3.  **Offline Site Handling:**
-    - Updated `Mobile`, `Design`, `Security`, and `Speed` columns to display `N/A` or `❌ Offline` instead of misleading default values when a site is unavailable.
+## 2026-02-05: v2.7 Release - Строгий поиск Email и HTTPS
+- **Умный поиск Email (`audit_websites_helpers.py`):**
+    - Парсинг страниц Contact/About через BeautifulSoup.
+    - Фильтрация спама и заглушек.
+    - Результат: ~80% восстановленных email'ов.
+- **Принудительная проверка HTTPS:**
+    - Исправлено ложное срабатывание "HTTP Only" для сайтов, блокирующих HTTP запросы.
+    - Логика: Если HTTP недоступен, пробуем сразу HTTPS порт 443.
+- **Обработка Offline сайтов:**
+    - Колонки Mobile, Design, Security теперь показывают `N/A`, если сайт недоступен.
 
 ### **Tests**
 - Ran integration test on 50 sites (`data/dentists_results_test_50.xlsx`).
