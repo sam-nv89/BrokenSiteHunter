@@ -1,5 +1,17 @@
 # DEV LOG
 
+## 2026-02-06: v2.8 Release - Final Polish & WAF Defense
+- **WAF Bypass & Protection Detection:**
+    - Updated `audit_websites.py` to identify sites returning `403/405` or CAPTCHA challenges as `⚠️ Protected` instead of `❌ Offline`.
+    - Recovered 7 valuable leads that were previously discarded.
+- **Strict Email Filtering:**
+    - Implemented blacklist for placeholder emails (`example@mysite.com`, `@domain.com`).
+    - Added smart fallback to `info@domain.com` only when appropriate.
+- **Report Restoration:**
+    - Created `scripts/apply_styles.py` to re-apply conditional formatting and smart column widths to the final Excel report.
+- **Helper Utilities:**
+    - `scripts/recheck_offline.py`: Tool to deep-scan "offline" sites without re-running the full audit.
+
 ## 2026-02-05: v2.7 Release - Strict Email Scraping & Robust HTTPS
 
 ### **Features & Improvements**
