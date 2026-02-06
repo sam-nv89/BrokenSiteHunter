@@ -411,21 +411,45 @@ def extract_emails_from_website(url, html_content=None):
         'Upgrade-Insecure-Requests': '1'
     }
     
-    # Strict Spam Filter
+    # Expanded Spam Filter (updated v2.7.2)
     spam_keywords = [
-        'example.com', 'test@', 'noreply@', 'no-reply@', 'yoursite', 
-        'yourdomain', 'your-email', 'email@', 'user@', 'admin@domain',
-        'name@', 'lastname@', 'firstname', 'email.com', 'domain.com',
-        'wixpress.com', 'sentry.io', '2x.png', 'bootstrap'
+        # Placeholders (Exact domain match preferred, or check with @)
+        '@example.com', '@test.com', '@mysite.com', '@yourdomain', '@yoursite',
+        '@domain.com', '@email.com', '@company.com', '@nowhere.com',
+        
+        # Generic/Spam Prefixes (only if domain is also suspicious)
+        'noreply@', 'no-reply@', 'donotreply@',
+        
+        # Site Builder defaults
+        'wixpress.com', 'sentry.io', '2x.png', 'bootstrap', 'react',
+        'cloud.google.com', 'wix.com', 'wordpress.com', 'squarespace.com'
     ]
     
     email_pattern = r'\b[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}\b'
     
     def is_valid_email(email):
         email_lower = email.lower()
+        
+        # 1. Check for spam keywords in the ENTIRE email
         for spam in spam_keywords:
-            if spam in email_lower: return False
-        if email_lower.endswith(('.png', '.jpg', '.jpeg', '.gif', '.svg', '.webp')): return False
+            if spam in email_lower: 
+                return False
+                
+        # 2. Check file extensions (images mistakenly grabbed by regex)
+        if email_lower.endswith(('.png', '.jpg', '.jpeg', '.gif', '.svg', '.webp', '.js', '.css')): 
+            return False
+            
+        # 3. Check for invalid domains
+        try:
+            domain = email_lower.split('@')[1]
+            if '.' not in domain or len(domain) < 4: # e.g. "a.co" minimum
+                return False
+            if domain in ['gmail.com', 'yahoo.com', 'hotmail.com']:
+                # Allow generic providers but maybe flag them? For now allow.
+                pass
+        except:
+            return False
+            
         return True
     
     def extract_from_html(html):

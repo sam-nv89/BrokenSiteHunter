@@ -179,6 +179,38 @@ def check_site_availability(url):
                 'load_time': load_time
             }
         else:
+            # Check for WAF/Protection signatures even in 403/503/406/429
+            protection_signatures = [
+                'captcha', 'challenge', 'cloudflare', 'security', 'firewall', 
+                'human verification', 'ddos', 'access denied', 'forbidden', 
+                'not acceptable', 'unusual traffic', 'bot', 'block'
+            ]
+            
+            is_protected = False
+            try:
+                 # 1. Check Content
+                 content_lower = response.text.lower()
+                 if any(sig in content_lower for sig in protection_signatures):
+                     is_protected = True
+                     
+                 # 2. Check Headers (New v2.8.2)
+                 if not is_protected:
+                     headers_str = str(response.headers).lower()
+                     if 'waf' in headers_str or 'captcha' in headers_str or 'challenge' in headers_str:
+                         is_protected = True
+            except:
+                pass
+
+            if is_protected or response.status_code in [403, 405, 406, 429, 503]:
+                # Treat as "Protected" (Available but blocked)
+                 return {
+                    'available': True, # Technically available!
+                    'status_code': response.status_code,
+                    'error': 'Protected', # Special flag
+                    'load_time': load_time,
+                    'is_protected': True
+                }
+
             return {
                 'available': False,
                 'status_code': response.status_code,
@@ -505,19 +537,44 @@ def audit_website(url, api_key=None, index=0, total=0):
         
         # Считаем сайт доступным если:
         # - 2xx (успех)
-        # - 403 (работает, но блокирует бота - это НЕ критично)
-        # Коды 3xx уже обработаны через allow_redirects=True
+        # - 403/405/406/429 (Защита сработала - сайт ЖИВОЙ)
+        
         if 200 <= response.status_code < 300:
             site_available = True
             html_content = response.text
-        elif response.status_code == 403:
-            # Сайт работает, но блокирует автоматические запросы
-            site_available = True  # Считаем доступным!
-            html_content = response.text if response.text else None
-            availability_error = 'Protected (403)'  # Помечаем как защищенный
         else:
-            # Для остальных кодов (404, 500, etc.) - сайт недоступен
-            availability_error = f'HTTP {response.status_code}'
+            # Check for WAF/Protection signatures even in 403/503/406/429/405
+            protection_signatures = [
+                'captcha', 'challenge', 'cloudflare', 'security', 'firewall', 
+                'human verification', 'ddos', 'access denied', 'forbidden', 
+                'not acceptable', 'unusual traffic', 'bot', 'block'
+            ]
+            
+            is_protected = False
+            try:
+                 # 1. Check Content
+                 content_lower = response.text.lower()
+                 if any(sig in content_lower for sig in protection_signatures):
+                     is_protected = True
+                     
+                 # 2. Check Headers (New v2.8.2)
+                 if not is_protected:
+                     headers_str = str(response.headers).lower()
+                     if 'waf' in headers_str or 'captcha' in headers_str or 'challenge' in headers_str:
+                         is_protected = True
+            except:
+                pass
+
+            if is_protected or response.status_code in [403, 405, 406, 429, 503]:
+                # Treat as "Protected" (Available but blocked)
+                site_available = True
+                html_content = response.text
+                availability_error = f"Protected ({response.status_code})"
+                
+            else:
+                site_available = False
+                availability_error = f"HTTP {response.status_code}"
+                html_content = None
             
     except requests.exceptions.Timeout:
         availability_error = 'Timeout'
@@ -723,12 +780,13 @@ def format_website_status(available, error=None):
     """
     if available and error and 'Protected' in str(error):
         return "⚠️ Protected"  # Работает, но блокирует ботов
-    elif available:
-        return "✅ Online"
-    elif error and 'timeout' in str(error).lower():
-        return "⏱️ Timeout"
-    else:
+        
+    if not available:
+        if error == 'Timeout':
+             return "⏱️ Timeout"
         return "❌ Offline"
+        
+    return "✅ Online"
 
 
 def format_security_status(is_https, ssl_valid, ssl_error=None):
@@ -752,9 +810,9 @@ def clean_website_url(url):
     Excel распознает такие URL как кликабельные ссылки.
     
     Пример:
-        http://www.mintdds.com/ → www.mintdds.com
-        https://bostondental.com/boston-downtown-crossing/ → www.bostondental.com
-        dentologyboston.com/index.html → www.dentologyboston.com
+        http://www.mintdds.com/ -> www.mintdds.com
+        https://bostondental.com/boston-downtown-crossing/ -> www.bostondental.com
+        dentologyboston.com/index.html -> www.dentologyboston.com
     
     Returns:
         str: URL в формате www.domain.com (без путей)
