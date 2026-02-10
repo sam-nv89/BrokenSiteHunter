@@ -1,5 +1,23 @@
 # DEV LOG
 
+## 2026-02-10: Agency Research & Outreach Prep
+- **Анализ рынка агентств:**
+    - Составлен список из 10 агентств (US/Global + RU/CIS) с партнерскими программами.
+    - Создан артефакт `docs/AGENCY_CONTACTS.md` с контактами.
+- **Подготовка шаблонов:**
+    - Разработаны 3 варианта писем (Research, Partnership, Seeking Advice).
+    - Финализирован **Option 3** (Seeking Advice) с обезличенным обращением и конкретными цифрами (800+ клиник, ~130 проблемных).
+    - Шаблоны сохранены в `docs/AGENCY_OUTREACH_TEMPLATES.md`.
+- **Анализ данных:**
+    - Проведен скрининг `dentists_results_final_v2.8.xlsx` для получения точных метрик (Geos/Issues Count).
+
+
+## 2026-02-10: v2.8 Final Testing - ✅ SUCCESS
+- **Результат:** Файл `data/dentists_results_final_v2.8.xlsx` сформирован (123KB).
+- **Статус:** Аудит реального датасета прошел успешно.
+- **Следующие шаги:** Переход к Data Collection (Google Places API).
+
+
 ## 2026-02-06: v2.8 Release - Финальная полировка и защита от WAF
 - **Обход WAF и защита:**
     - Обновлен `audit_websites.py`: теперь сайты с кодами `403/405` или капчей помечаются как `⚠️ Protected` (Защищен), а не `❌ Offline`.
